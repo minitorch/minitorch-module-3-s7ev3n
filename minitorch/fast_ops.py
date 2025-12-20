@@ -168,8 +168,21 @@ def tensor_map(
         in_shape: Shape,
         in_strides: Strides,
     ) -> None:
-        # TODO: Implement for Task 3.1.
-        raise NotImplementedError("Need to implement for Task 3.1")
+        # Compute total number of elements in output
+        size = len(out)
+
+        # allocate index buffers sized to each tensor's ndim
+        out_index = np.zeros(len(out_shape), dtype=np.int32)
+        in_index = np.zeros(len(in_shape), dtype=np.int32)
+
+        for i in prange(size):
+            to_index(i, out_shape, out_index)
+            broadcast_index(out_index, out_shape, in_shape, in_index)
+
+            out_pos = index_to_position(out_index, out_strides)
+            in_pos = index_to_position(in_index, in_strides)
+
+            out[out_pos] = fn(in_storage[in_pos])
 
     return njit(_map, parallel=True)  # type: ignore
 
@@ -208,8 +221,24 @@ def tensor_zip(
         b_shape: Shape,
         b_strides: Strides,
     ) -> None:
-        # TODO: Implement for Task 3.1.
-        raise NotImplementedError("Need to implement for Task 3.1")
+        # Compute total number of elements in output
+        size = len(out)
+
+        # allocate index buffers sized to each tensor's ndim
+        out_index = np.zeros(len(out_shape), dtype=np.int32)
+        a_index = np.zeros(len(a_shape), dtype=np.int32)
+        b_index = np.zeros(len(b_shape), dtype=np.int32)
+
+        for i in prange(size):
+            to_index(i, out_shape, out_index)
+            broadcast_index(out_index, out_shape, a_shape, a_index)
+            broadcast_index(out_index, out_shape, b_shape, b_index)
+
+            out_pos = index_to_position(out_index, out_strides)
+            a_pos = index_to_position(a_index, a_strides)
+            b_pos = index_to_position(b_index, b_strides)
+
+            out[out_pos] = fn(a_storage[a_pos], b_storage[b_pos])
 
     return njit(_zip, parallel=True)  # type: ignore
 
@@ -244,8 +273,33 @@ def tensor_reduce(
         a_strides: Strides,
         reduce_dim: int,
     ) -> None:
-        # TODO: Implement for Task 3.1.
-        raise NotImplementedError("Need to implement for Task 3.1")
+        # Compute total number of elements in output
+        size = len(out)
+
+        # allocate index buffers sized to each tensor's ndim
+        out_index = np.zeros(len(out_shape), dtype=np.int32)
+        a_index = np.zeros(len(a_shape), dtype=np.int32)
+
+        for i in prange(size):
+            to_index(i, out_shape, out_index)
+
+            # Copy output index to input index, but set reduced dimension to 0
+            for j in range(len(out_shape)):
+                a_index[j] = out_index[j]
+            a_index[reduce_dim] = 0
+
+            # Find the output position
+            out_pos = index_to_position(out_index, out_strides)
+
+            # Reduce along the specified dimension
+            current = a_storage[index_to_position(a_index, a_strides)]
+
+            # Iterate through all values in the reduced dimension
+            for k in range(1, a_shape[reduce_dim]):
+                a_index[reduce_dim] = k
+                current = fn(current, a_storage[index_to_position(a_index, a_strides)])
+
+            out[out_pos] = current
 
     return njit(_reduce, parallel=True)  # type: ignore
 
