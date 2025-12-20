@@ -384,7 +384,93 @@ def _tensor_matrix_multiply(
     b_batch_stride = b_strides[0] if b_shape[0] > 1 else 0
 
     # TODO: Implement for Task 3.2.
-    raise NotImplementedError("Need to implement for Task 3.2")
+    # 1. 获取维度的基本信息
+    # a 的形状: (Batch..., M, N)
+    # b 的形状: (Batch..., N, P)
+    # out 的形状: (Batch..., M, P)
+    dims = len(out_shape)
+    
+    # 提取矩阵乘法相关的维度 (最后两维)
+    # M, P 是输出矩阵的高和宽，N 是中间维度 (Reduction dimension)
+    stride_out_m = out_strides[dims - 2]
+    stride_out_p = out_strides[dims - 1]
+    
+    stride_a_m = a_strides[dims - 2]
+    stride_a_n = a_strides[dims - 1]
+    
+    stride_b_n = b_strides[dims - 2]
+    stride_b_p = b_strides[dims - 1]
+
+    M = out_shape[dims - 2]
+    P = out_shape[dims - 1]
+    N = a_shape[dims - 1] # 对应 a_shape[-1] == b_shape[-2]
+
+    # 2. 计算 Batch 的总数量 (将所有 Batch 维度展平)
+    # 例如 out_shape = (2, 3, 4, 5)，batch 部分就是 (2, 3)，batch_size = 6
+    batch_size = 1
+    for i in range(dims - 2):
+        batch_size *= out_shape[i]
+
+    # 3. 并行遍历每一个 Batch
+    for i in prange(batch_size):
+        
+        # --- 索引映射与广播处理开始 ---
+        # 我们需要根据线性的 batch 索引 'i'，反解出多维索引，
+        # 并计算出 a 和 b 在存储中的起始偏移量。
+        
+        a_batch_offset = 0
+        b_batch_offset = 0
+        out_batch_offset = 0
+        
+        current_idx = i
+        
+        # 从最内层的 batch 维度向外层遍历 (即倒数第3维向第0维遍历)
+        # 对应 shape 中的 indices: [dims-3, dims-4, ... 0]
+        for d in range(dims - 3, -1, -1):
+            # 当前维度的大小
+            dim_size = out_shape[d]
+            # 当前维度的坐标
+            coord = current_idx % dim_size
+            current_idx = current_idx // dim_size
+            
+            # 计算 Out 的偏移量 (无广播，直接累加)
+            out_batch_offset += coord * out_strides[d]
+            
+            # 计算 A 的偏移量 (处理广播)
+            # 如果 A 在该维度形状为 1，则索引固定为 0 (Stride贡献为0)
+            if a_shape[d] == 1:
+                a_offset = 0
+            else:
+                a_offset = coord
+            a_batch_offset += a_offset * a_strides[d]
+            
+            # 计算 B 的偏移量 (处理广播)
+            if b_shape[d] == 1:
+                b_offset = 0
+            else:
+                b_offset = coord
+            b_batch_offset += b_offset * b_strides[d]
+        # --- 索引映射结束 ---
+
+        # 4. 执行单次矩阵乘法 (M x N) * (N x P) -> (M x P)
+        # 此时我们已经定位到了具体的矩阵起始位置：a_batch_offset, b_batch_offset
+        for m in range(M):
+            for p in range(P):
+                acc = 0.0
+                # 提取内层循环的起始位置，减少重复计算
+                a_row_ptr = a_batch_offset + m * stride_a_m
+                b_col_ptr = b_batch_offset + p * stride_b_p
+                
+                for n in range(N):
+                    # 获取 A[m, n]
+                    val_a = a_storage[a_row_ptr + n * stride_a_n]
+                    # 获取 B[n, p]
+                    val_b = b_storage[b_col_ptr + n * stride_b_n]
+                    acc += val_a * val_b
+                
+                # 写入结果
+                out_loc = out_batch_offset + m * stride_out_m + p * stride_out_p
+                out[out_loc] = acc
 
 def _tensor_matrix_multiply_2(
     out: Storage,
