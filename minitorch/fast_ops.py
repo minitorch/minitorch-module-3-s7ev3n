@@ -171,18 +171,30 @@ def tensor_map(
         # Compute total number of elements in output
         size = len(out)
 
-        # allocate index buffers sized to each tensor's ndim
-        out_index = np.zeros(len(out_shape), dtype=np.int32)
-        in_index = np.zeros(len(in_shape), dtype=np.int32)
+        # Check if tensors are stride-aligned (same shape and strides)
+        stride_aligned = (
+            len(out_shape) == len(in_shape) and
+            out_shape == in_shape and
+            out_strides == in_strides
+        )
 
-        for i in prange(size):
-            to_index(i, out_shape, out_index)
-            broadcast_index(out_index, out_shape, in_shape, in_index)
+        if stride_aligned:
+            # Direct memory access without indexing
+            for i in prange(size):
+                out[i] = fn(in_storage[i])
+        else:
+            # allocate index buffers sized to each tensor's ndim
+            out_index = np.zeros(len(out_shape), dtype=np.int32)
+            in_index = np.zeros(len(in_shape), dtype=np.int32)
 
-            out_pos = index_to_position(out_index, out_strides)
-            in_pos = index_to_position(in_index, in_strides)
+            for i in prange(size):
+                to_index(i, out_shape, out_index)
+                broadcast_index(out_index, out_shape, in_shape, in_index)
 
-            out[out_pos] = fn(in_storage[in_pos])
+                out_pos = index_to_position(out_index, out_strides)
+                in_pos = index_to_position(in_index, in_strides)
+
+                out[out_pos] = fn(in_storage[in_pos])
 
     return njit(_map, parallel=True)  # type: ignore
 
@@ -224,21 +236,33 @@ def tensor_zip(
         # Compute total number of elements in output
         size = len(out)
 
-        # allocate index buffers sized to each tensor's ndim
-        out_index = np.zeros(len(out_shape), dtype=np.int32)
-        a_index = np.zeros(len(a_shape), dtype=np.int32)
-        b_index = np.zeros(len(b_shape), dtype=np.int32)
+        # Check if all tensors are stride-aligned (same shape and strides)
+        stride_aligned = (
+            len(out_shape) == len(a_shape) == len(b_shape) and
+            out_shape == a_shape == b_shape and
+            out_strides == a_strides == b_strides
+        )
 
-        for i in prange(size):
-            to_index(i, out_shape, out_index)
-            broadcast_index(out_index, out_shape, a_shape, a_index)
-            broadcast_index(out_index, out_shape, b_shape, b_index)
+        if stride_aligned:
+            # Direct memory access without indexing
+            for i in prange(size):
+                out[i] = fn(a_storage[i], b_storage[i])
+        else:
+            # allocate index buffers sized to each tensor's ndim
+            out_index = np.zeros(len(out_shape), dtype=np.int32)
+            a_index = np.zeros(len(a_shape), dtype=np.int32)
+            b_index = np.zeros(len(b_shape), dtype=np.int32)
 
-            out_pos = index_to_position(out_index, out_strides)
-            a_pos = index_to_position(a_index, a_strides)
-            b_pos = index_to_position(b_index, b_strides)
+            for i in prange(size):
+                to_index(i, out_shape, out_index)
+                broadcast_index(out_index, out_shape, a_shape, a_index)
+                broadcast_index(out_index, out_shape, b_shape, b_index)
 
-            out[out_pos] = fn(a_storage[a_pos], b_storage[b_pos])
+                out_pos = index_to_position(out_index, out_strides)
+                a_pos = index_to_position(a_index, a_strides)
+                b_pos = index_to_position(b_index, b_strides)
+
+                out[out_pos] = fn(a_storage[a_pos], b_storage[b_pos])
 
     return njit(_zip, parallel=True)  # type: ignore
 
@@ -253,6 +277,10 @@ def tensor_reduce(
     * Main loop in parallel
     * All indices use numpy buffers
     * Inner-loop should not call any functions or write non-local variables
+    为什么这里不能写入non-local variables？
+    因为numba的并行化要求每个线程独立工作，不能共享状态，即prange中的循环迭代是并行执行的；
+    如果在并行循环中写入non-local variables会导致数据竞争和不确定行为.
+    哪些是non-local variables呢？就是main loop外部定义的变量
 
     Args:
     ----
@@ -295,9 +323,14 @@ def tensor_reduce(
             current = a_storage[index_to_position(a_index, a_strides)]
 
             # Iterate through all values in the reduced dimension
+            # Pre-compute stride for the reduced dimension to avoid function calls
+            reduce_stride = a_strides[reduce_dim]
+            base_pos = index_to_position(a_index, a_strides)
+
             for k in range(1, a_shape[reduce_dim]):
-                a_index[reduce_dim] = k
-                current = fn(current, a_storage[index_to_position(a_index, a_strides)])
+                # Update position by adding stride instead of recalculating
+                base_pos += reduce_stride
+                current = fn(current, a_storage[base_pos])
 
             out[out_pos] = current
 
