@@ -386,6 +386,89 @@ def _tensor_matrix_multiply(
     # TODO: Implement for Task 3.2.
     raise NotImplementedError("Need to implement for Task 3.2")
 
+def _tensor_matrix_multiply_2(
+    out: Storage,
+    out_shape: Shape,
+    out_strides: Strides,
+    a_storage: Storage,
+    a_shape: Shape,
+    a_strides: Strides,
+    b_storage: Storage,
+    b_shape: Shape,
+    b_strides: Strides,
+) -> None:
+    """NUMBA tensor matrix multiply function.
 
+    Should work for any tensor shapes that broadcast as long as
+
+    ```
+    assert a_shape[-1] == b_shape[-2]
+    ```
+    这个版本实现matrix multiplication by applying a broadcasted zip and then a reduce，
+    For example, consider a tensor of size (2, 4) and a tensor of size (4, 3). 
+    We first zip these together with broadcasting to produce a tensor of size (2, 4, 3).
+    因此，实现的时候我们创建一个临时的中间变量temp_storage来存储这个(2,4,3)的结果，
+    然后再使用reduce沿着中间维度进行求和，得到最终的(2,3)结果。
+
+    Args:
+    ----
+        out (Storage): storage for `out` tensor
+        out_shape (Shape): shape for `out` tensor
+        out_strides (Strides): strides for `out` tensor
+        a_storage (Storage): storage for `a` tensor
+        a_shape (Shape): shape for `a` tensor
+        a_strides (Strides): strides for `a` tensor
+        b_storage (Storage): storage for `b` tensor
+        b_shape (Shape): shape for `b` tensor
+        b_strides (Strides): strides for `b` tensor
+
+    Returns:
+    -------
+        None : Fills in `out`
+
+    """
+    # Get dimensions from shapes: A(B, M, K), B(B, K, N) -> Out(B, M, N)
+    B = out_shape[0]
+    M = out_shape[1]   # M
+    N = out_shape[2]   # N
+    K = a_shape[2]    # K (a_shape[-1] == b_shape[-2])
+
+    # Step 1: Create intermediate 4D tensor for zip operation: (B, M, K, N)
+    # This will store A * B products before reduction
+    temp_size = B * M * K * N
+    temp_storage = np.zeros(temp_size, dtype=np.float64)
+    temp_shape = np.array([B, M, K, N], dtype=np.int32)
+    temp_strides = np.array([
+        M * K * N,  # B stride
+        K * N,      # M stride
+        N,          # K stride
+        1           # N stride
+    ], dtype=np.int32)
+
+    # Step 2: Broadcast A and B to 4D shapes for zip operation
+    # A(B, M, K) -> (B, M, K, 1) by adding N=1 dimension
+    a_4d_shape = np.array([B, M, K, 1], dtype=np.int32)
+    a_4d_strides = np.array([a_strides[0], a_strides[1], a_strides[2], 0], dtype=np.int32)
+
+    # B(B, K, N) -> (B, 1, K, N) by adding M=1 dimension
+    b_4d_shape = np.array([B, 1, K, N], dtype=np.int32)
+    b_4d_strides = np.array([b_strides[0], 0, b_strides[1], b_strides[2]], dtype=np.int32)
+
+    # Step 3: Zip operation - multiply A and B with broadcasting
+    # Result: (B, M, K, N) where each element is A[B,M,K] * B[B,K,N]
+    zip_fn = tensor_zip(lambda x, y: x * y)
+    zip_fn(temp_storage, temp_shape, temp_strides,
+           a_storage, a_4d_shape, a_4d_strides,
+           b_storage, b_4d_shape, b_4d_strides)
+
+    # Step 4: Reduce operation - sum along K dimension (dimension 2)
+    # Reduce (B, M, K, N) -> (B, M, N) by summing over K
+    reduce_fn = tensor_reduce(lambda x, y: x + y)
+    reduce_fn(out, out_shape, out_strides,
+              temp_storage, temp_shape, temp_strides, 2)
+
+
+# Set the main tensor_matrix_multiply to use the new implementation
+_tensor_matrix_multiply = _tensor_matrix_multiply_2
 tensor_matrix_multiply = njit(_tensor_matrix_multiply, parallel=True)
 assert tensor_matrix_multiply is not None
